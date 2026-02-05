@@ -10,6 +10,7 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 lxml==5.3.0
 selenium==4.26.1
+webdriver-manager==4.0.2
 
 # 데이터 처리
 pydantic==2.10.3

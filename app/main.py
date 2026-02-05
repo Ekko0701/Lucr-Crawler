@@ -8,7 +8,7 @@ from app.crawler.mk_crawler import MKCrawler
 from app.crawler.edaily_crawler import EdailyCrawler
 from app.crawler.herald_crawler import HeraldCrawler
 from app.crawler.yahoo_crawler import YahooCrawler
-from app.crawler.reuters_crawler import ReutersCrawler
+from app.crawler.chosunbiz_crawler import ChosunbizCrawler
 from app.services.news_service import NewsService
 from app.utils.logger import log
 
@@ -86,12 +86,12 @@ async def crawl_yahoo_news(background_tasks: BackgroundTasks):
     return {"message": "Yahoo Finance 뉴스 크롤링이 시작되었습니다.", "status": "started"}
 
 
-@app.post("/crawl/reuters")
-async def crawl_reuters_news(background_tasks: BackgroundTasks):
-    """Reuters 뉴스 크롤링"""
-    log.info("Reuters 뉴스 크롤링 요청 받음")
-    background_tasks.add_task(run_reuters_crawler)
-    return {"message": "Reuters 뉴스 크롤링이 시작되었습니다.", "status": "started"}
+@app.post("/crawl/chosunbiz")
+async def crawl_chosunbiz_news(background_tasks: BackgroundTasks):
+    """조선비즈 뉴스 크롤링"""
+    log.info("조선비즈 뉴스 크롤링 요청 받음")
+    background_tasks.add_task(run_chosunbiz_crawler)
+    return {"message": "조선비즈 뉴스 크롤링이 시작되었습니다.", "status": "started"}
 
 
 @app.post("/crawl/all")
@@ -143,10 +143,10 @@ async def run_yahoo_crawler():
     await _run_crawler(crawler, "Yahoo Finance")
 
 
-async def run_reuters_crawler():
-    """Reuters 크롤러 실행"""
-    crawler = ReutersCrawler()
-    await _run_crawler(crawler, "Reuters")
+async def run_chosunbiz_crawler():
+    """조선비즈 크롤러 실행"""
+    crawler = ChosunbizCrawler()
+    await _run_crawler(crawler, "조선비즈")
 
 
 async def _run_crawler(crawler, source_name: str):
@@ -216,11 +216,11 @@ async def run_all_crawlers():
     # 4. 헤럴드경제
     await run_herald_crawler()
     
-    # 5. Yahoo Finance
-    await run_yahoo_crawler()
+    # 5. 조선비즈
+    await run_chosunbiz_crawler()
     
-    # 6. Reuters
-    await run_reuters_crawler()
+    # 6. Yahoo Finance
+    await run_yahoo_crawler()
     
     log.info("=== 전체 크롤러 실행 완료 ===")
 

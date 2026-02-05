@@ -1,93 +1,180 @@
-import httpx
-from bs4 import BeautifulSoup
+"""
+Yahoo Finance 뉴스 크롤러 (Selenium 기반)
+
+작성자: charlie0701
+작성일: 2026-02-03
+"""
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
 from typing import List
+import asyncio
+import re
 
 from app.models.news import CrawledNews
 from app.utils.logger import log
 
 
 class YahooCrawler:
-    """Yahoo Finance 뉴스 크롤러"""
+    """Yahoo Finance 뉴스 크롤러 (Selenium 기반)"""
     
     def __init__(self):
         self.base_url = "https://finance.yahoo.com"
-        self.news_list_url = f"{self.base_url}/news"
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        }
+        self.news_list_url = f"{self.base_url}/topic/stock-market-news"
+    
+    def _create_driver(self):
+        """Chrome 드라이버 생성"""
+        chrome_options = Options()
+        chrome_options.add_argument('--headless')  # 백그라운드 실행
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
+        
+        # 자동으로 ChromeDriver 다운로드 및 설치
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(30)
+        
+        return driver
     
     async def crawl(self, max_news: int = 50) -> List[CrawledNews]:
-        """Yahoo Finance 뉴스 크롤링"""
+        """Yahoo Finance 뉴스 크롤링 (Selenium 사용)"""
         log.info(f"Yahoo Finance 뉴스 크롤링 시작 (최대 {max_news}개)")
         
+        crawled_news = []
+        driver = None
+        
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(self.news_list_url, headers=self.headers)
-                response.raise_for_status()
-                
-                soup = BeautifulSoup(response.text, 'lxml')
-                news_items = soup.select('li[data-test-locator="mega-item"], .js-stream-content li')
-                
-                crawled_news = []
-                
-                for item in news_items[:max_news]:
-                    try:
-                        news = await self._parse_news_item(item, client)
-                        if news:
-                            crawled_news.append(news)
-                    except Exception as e:
-                        log.error(f"뉴스 파싱 실패: {e}")
-                        continue
-                
-                log.info(f"Yahoo Finance 뉴스 크롤링 완료: {len(crawled_news)}개")
-                return crawled_news
-                
+            # 동기 함수를 비동기로 실행
+            driver = await asyncio.to_thread(self._create_driver)
+            
+            # 뉴스 리스트 페이지 로드
+            await asyncio.to_thread(driver.get, self.news_list_url)
+            await asyncio.sleep(2)  # JavaScript 렌더링 대기
+            
+            # 뉴스 링크 추출
+            news_links = await asyncio.to_thread(self._extract_news_links, driver)
+            log.info(f"Yahoo Finance 뉴스 링크 {len(news_links)}개 발견")
+            
+            # 각 뉴스 기사 크롤링
+            for link_info in news_links[:max_news]:
+                try:
+                    news = await self._fetch_news_content(driver, link_info['url'], link_info['title'])
+                    if news:
+                        crawled_news.append(news)
+                except Exception as e:
+                    log.error(f"Yahoo Finance 뉴스 파싱 실패 ({link_info['url']}): {e}")
+                    continue
+            
+            log.info(f"Yahoo Finance 뉴스 크롤링 완료: {len(crawled_news)}개")
+            return crawled_news
+            
         except Exception as e:
             log.error(f"Yahoo Finance 뉴스 크롤링 실패: {e}")
             return []
+        finally:
+            if driver:
+                await asyncio.to_thread(driver.quit)
     
-    async def _parse_news_item(self, item, client: httpx.AsyncClient) -> CrawledNews:
-        """개별 뉴스 아이템 파싱"""
-        title_tag = item.select_one('h3 a, a[data-test="mega-item-title"]')
-        if not title_tag:
-            return None
-        
-        title = title_tag.get_text(strip=True)
-        news_url = title_tag.get('href', '')
-        
-        if not news_url:
-            return None
-        
-        if not news_url.startswith('http'):
-            news_url = self.base_url + news_url
-        
-        published_at = datetime.now()
-        content, image_url = await self._fetch_news_content(news_url, client)
-        
-        return CrawledNews(
-            title=title,
-            content=content,
-            url=news_url,
-            source="YAHOO_FINANCE",
-            published_at=published_at,
-            image_url=image_url
-        )
+    def _extract_news_links(self, driver) -> List[dict]:
+        """뉴스 링크 추출"""
+        try:
+            # 여러 선택자 시도
+            selectors = [
+                'h3 a',
+                'a[data-test-locator="stream-item-title"]',
+                'a[href*="/news/"]'
+            ]
+            
+            links = []
+            for selector in selectors:
+                try:
+                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    for el in elements:
+                        href = el.get_attribute('href')
+                        title = el.text.strip()
+                        if href and title and '/news/' in href and len(title) > 10:
+                            links.append({'url': href, 'title': title})
+                except:
+                    continue
+            
+            # 중복 제거
+            seen = set()
+            unique_links = []
+            for item in links:
+                if item['url'] not in seen:
+                    seen.add(item['url'])
+                    unique_links.append(item)
+            
+            return unique_links
+            
+        except Exception as e:
+            log.error(f"Yahoo Finance 링크 추출 실패: {e}")
+            return []
     
-    async def _fetch_news_content(self, url: str, client: httpx.AsyncClient) -> tuple[str, str]:
+    async def _fetch_news_content(self, driver, url: str, title: str) -> CrawledNews:
         """뉴스 본문 추출"""
         try:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
+            await asyncio.to_thread(driver.get, url)
+            await asyncio.sleep(1.5)
             
-            soup = BeautifulSoup(response.text, 'lxml')
-            content_tag = soup.select_one('.caas-body, article, .article-body')
-            content = content_tag.get_text(strip=True) if content_tag else "본문 없음"
+            # 본문 추출
+            content = ""
+            content_selectors = [
+                '.caas-body',
+                'article[class*="body"]',
+                '.article-wrap',
+                'article'
+            ]
             
-            image_tag = soup.select_one('.caas-img img, article img')
-            image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else None
+            for selector in content_selectors:
+                try:
+                    element = driver.find_element(By.CSS_SELECTOR, selector)
+                    content = element.text.strip()
+                    if content:
+                        break
+                except:
+                    continue
             
-            return content[:5000], image_url
+            # 이미지 추출
+            image_url = None
+            image_selectors = [
+                '.caas-img img',
+                'article img',
+                'img[class*="featured"]'
+            ]
+            
+            for selector in image_selectors:
+                try:
+                    img_element = driver.find_element(By.CSS_SELECTOR, selector)
+                    image_url = img_element.get_attribute('src')
+                    if image_url:
+                        break
+                except:
+                    continue
+            
+            # 제목 정규화 (500자 제한)
+            title = re.sub(r'\s+', ' ', title).strip()
+            if len(title) > 500:
+                title = title[:500]
+            
+            return CrawledNews(
+                title=title,
+                content=content[:5000] if content else "Content not available",
+                url=url,
+                source="YAHOO_FINANCE",
+                published_at=datetime.now(),
+                image_url=image_url
+            )
+            
         except Exception as e:
-            log.error(f"Yahoo Finance 본문 가져오기 실패: {e}")
-            return "본문 없음", None
+            log.error(f"Yahoo Finance 본문 추출 실패: {e}")
+            return None
