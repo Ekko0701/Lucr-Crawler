@@ -82,10 +82,17 @@ class CrawlConsumer:
             os.getenv("RABBITMQ_PASSWORD", "alpha5059"),
         )
         # ConnectionParameters: 연결 정보를 묶은 객체 (실제 연결은 start()에서 수행)
+        # heartbeat=600: 크롤링은 수 분이 걸리므로 heartbeat 간격을 10분으로 설정
+        #   기본값(60초)이면 크롤링 중 heartbeat 응답을 못 보내서 RabbitMQ가 연결을 끊음
+        #   BlockingConnection은 단일 스레드라 크롤링 중 heartbeat 프레임 처리 불가
+        # blocked_connection_timeout=300: RabbitMQ가 flow control로 연결을 차단했을 때
+        #   5분까지 대기 (기본값은 무한 대기)
         self.params = pika.ConnectionParameters(
             host=os.getenv("RABBITMQ_HOST", "localhost"),
             port=int(os.getenv("RABBITMQ_PORT", "5672")),
             credentials=credentials,
+            heartbeat=600,
+            blocked_connection_timeout=300,
         )
         self.db = DBManager()                    # PostgreSQL 직접 조작
         self.publisher = CrawlResultPublisher()  # 완료 이벤트 Publisher
@@ -221,18 +228,43 @@ class CrawlConsumer:
             log.error(f"크롤링 처리 실패: {e}")
 
             # ── 실패 처리 ──
+            # 주의: ACK 전송 단계에서 연결 끊김(heartbeat timeout 등)으로 실패한 경우,
+            # 크롤링 자체는 성공하고 DB에 COMPLETED가 이미 기록된 상태일 수 있음.
+            # 이 경우 FAILED로 덮어쓰면 안 되므로, 현재 DB 상태를 확인 후 처리.
             if job_id:
-                # DB에 실패 상태 기록
-                self.db.update_job_status(job_id, "FAILED", error_message=str(e))
-                # Spring에 실패 이벤트 발행
-                self.publisher.publish(job_id, "FAILED")
+                try:
+                    from app.config.database import SessionLocal
+                    from app.models.db_models import CrawlJobModel
+                    import uuid as uuid_mod
+                    session = SessionLocal()
+                    current_job = session.query(CrawlJobModel).filter(
+                        CrawlJobModel.id == uuid_mod.UUID(job_id)
+                    ).first()
+                    current_status = current_job.status if current_job else None
+                    session.close()
+                except Exception:
+                    current_status = None
+
+                if current_status == "COMPLETED":
+                    # 이미 COMPLETED로 기록됨 → FAILED로 덮어쓰지 않음
+                    log.warning(
+                        f"ACK 전송 실패했으나 크롤링은 성공 (DB 상태: COMPLETED): jobId={job_id}"
+                    )
+                else:
+                    # 실제 크롤링 실패 → FAILED 기록
+                    self.db.update_job_status(job_id, "FAILED", error_message=str(e))
+                    self.publisher.publish(job_id, "FAILED")
 
             # ── NACK 전송 ──
             # requeue=False: 이 메시지를 Queue에 다시 넣지 않음 (무한 재시도 방지)
             # → DLQ(Dead Letter Queue) 설정이 있으면 DLQ로 이동, 없으면 폐기
             # requeue=True로 하면 큐 맨 뒤에 다시 들어가지만,
             # 크롤링 실패는 재시도해도 대부분 같은 결과이므로 False가 적절
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            try:
+                channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            except Exception:
+                # 연결이 이미 끊어진 경우 NACK도 실패할 수 있음 → 무시
+                log.warning("NACK 전송 실패 (연결 끊김)")
 
     async def _run_all_crawlers(self, max_articles: int) -> dict:
         """
