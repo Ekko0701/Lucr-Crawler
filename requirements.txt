@@ -28,3 +28,15 @@ pika==1.3.2
 # ORM (PostgreSQL 직접 저장)
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
+
+# ── Phase 2: AI/NLP 분석 ──────────────────────────────────────────
+# 한국어 형태소 분석 (Java 의존성 없는 순수 Python 구현)
+# KoNLPy 대신 kiwipiepy를 선택한 이유:
+#   Python 3.12 + M-chip Mac에서 Java/JVM 없이 동작, pip 한 줄로 설치 완료
+kiwipiepy==0.22.2
+
+# TF-IDF 키워드 추출 (KeywordExtractor에서 사용)
+scikit-learn==1.5.2
+
+# 수치 연산 (scikit-learn 의존성, TF-IDF 행렬 처리)
+numpy==2.1.3
