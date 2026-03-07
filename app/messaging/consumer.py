@@ -16,6 +16,11 @@
      e. 완료 이벤트를 RabbitMQ에 역발행 (Publisher 사용)
   4. Spring CrawlResultListener(미구현)가 완료 이벤트 수신
 
+모델/저장 경로 주의:
+  - 이 Worker 경로는 `CrawledNews`를 `DBManager.save_news()`로 직접 저장합니다.
+  - `NewsCreate` DTO와 `NewsService`(HTTP POST)는 여기서 사용하지 않습니다.
+  - `NewsCreate`는 FastAPI(`/crawl/*`) 경로에서만 사용됩니다.
+
 ACK/NACK 메커니즘:
   - ACK  (Acknowledge):  "이 메시지 처리 완료" → RabbitMQ가 큐에서 메시지 삭제
   - NACK (Negative ACK): "이 메시지 처리 실패" → requeue=False면 DLQ로 이동 또는 폐기

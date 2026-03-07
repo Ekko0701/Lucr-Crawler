@@ -4,6 +4,9 @@ SQLAlchemy 모델 - Spring Entity와 동일한 테이블에 매핑
 주의: 컬럼명과 타입은 Spring Entity와 정확히 일치해야 합니다.
   - News.java      → News 모델         (테이블: news)
   - CrawlJob.java  → CrawlJobModel     (테이블: crawl_jobs)
+  - Keyword.java   → Keyword 모델      (테이블: keywords)
+  - NewsKeyword.java → NewsKeyword 모델 (테이블: news_keywords)
+  - NewsStock.java → NewsStock 모델    (테이블: news_stocks)
 
 테이블은 Spring이 ddl-auto: update로 이미 생성했으므로,
 Python은 기존 테이블에 매핑만 합니다.
@@ -11,7 +14,16 @@ Python은 기존 테이블에 매핑만 합니다.
 @author Ekko0701
 @since 2026-02-06
 """
-from sqlalchemy import Column, String, Text, Integer, Boolean, DateTime, Numeric
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 import uuid
 from datetime import datetime
@@ -61,3 +73,62 @@ class CrawlJobModel(Base):
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
     completed_at = Column(DateTime)
+
+
+class Keyword(Base):
+    """
+    keywords 테이블 매핑
+
+    word 컬럼은 UNIQUE 제약이 있으므로 같은 키워드는 1행만 유지합니다.
+    """
+    __tablename__ = "keywords"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    word = Column(String(100), nullable=False, unique=True)
+    frequency = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class NewsKeyword(Base):
+    """
+    news_keywords 테이블 매핑
+
+    뉴스-키워드 다대다 관계의 중간 테이블이며 복합 PK를 사용합니다.
+    """
+    __tablename__ = "news_keywords"
+
+    news_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("news.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    keyword_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("keywords.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tfidf_score = Column(Numeric(4, 2), nullable=False, default=1.0)
+    created_at = Column(DateTime, default=datetime.now)
+
+
+class NewsStock(Base):
+    """
+    news_stocks 테이블 매핑
+
+    뉴스-종목 다대다 관계의 중간 테이블이며 복합 PK를 사용합니다.
+    """
+    __tablename__ = "news_stocks"
+
+    news_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("news.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    stock_code = Column(
+        String(20),
+        ForeignKey("stocks.code", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    mention_count = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.now)

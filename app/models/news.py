@@ -17,7 +17,17 @@ from pydantic import BaseModel, Field
 
 
 class NewsCreate(BaseModel):
-    """Spring API로 보낼 뉴스 생성 DTO"""
+    """
+    Spring API(`/api/v1/news`)로 보낼 요청 DTO.
+
+    사용 경로:
+      - FastAPI 엔드포인트(`/crawl/*`) 실행 시
+      - `CrawledNews.to_create_dto()` -> `NewsService.create_news()` 순서로 전송
+
+    미사용 경로:
+      - RabbitMQ Worker 경로(`app.messaging.consumer`)
+      - Worker는 HTTP DTO를 쓰지 않고 DBManager로 DB에 직접 저장
+    """
     title: str = Field(..., min_length=5, max_length=500)
     content: str = Field(..., min_length=1)
     url: str = Field(..., max_length=2000)
@@ -67,7 +77,12 @@ class CrawledNews(BaseModel):
         }
 
     def to_create_dto(self) -> NewsCreate:
-        """Spring API 요청용 DTO로 변환 (sentiment_score 포함)"""
+        """
+        FastAPI HTTP 저장 경로에서 사용할 `NewsCreate`로 변환한다.
+
+        참고:
+          Worker 직접 저장 경로에서는 이 메서드가 호출되지 않는다.
+        """
         sentiment = None
         if self.sentiment_score is not None:
             # float -> Decimal 변환 + 범위 보장 (-1.0 ~ 1.0)

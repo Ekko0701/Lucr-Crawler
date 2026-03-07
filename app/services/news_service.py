@@ -13,7 +13,13 @@ SPRING_API_URL = os.getenv("SPRING_API_URL", "http://localhost:8081")
 
 
 class NewsService:
-    """Spring Backend API 통신 서비스"""
+    """
+    Spring Backend API 통신 서비스.
+
+    이 서비스는 FastAPI(`/crawl/*`) 실행 경로에서만 사용된다.
+    RabbitMQ Worker 경로는 DBManager를 통해 DB에 직접 저장하므로
+    이 HTTP 서비스와 `NewsCreate` DTO를 사용하지 않는다.
+    """
     
     def __init__(self):
         self.base_url = SPRING_API_URL

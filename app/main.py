@@ -150,7 +150,16 @@ async def run_chosunbiz_crawler():
 
 
 async def _run_crawler(crawler, source_name: str):
-    """공통 크롤러 실행 로직"""
+    """
+    공통 크롤러 실행 로직 (FastAPI HTTP 저장 경로).
+
+    저장 방식:
+      - CrawledNews -> NewsCreate DTO 변환 후 Spring API로 POST
+
+    참고:
+      - 실서비스의 메인 비동기 파이프라인( Spring -> RabbitMQ -> Worker )은
+        `app.messaging.consumer`에서 동작하며 DB에 직접 저장한다.
+    """
     news_service = NewsService()
     
     try:
@@ -172,6 +181,8 @@ async def _run_crawler(crawler, source_name: str):
                     duplicate_count += 1
                     continue
                 
+                # FastAPI 경로에서만 DTO 변환 후 HTTP 전송을 수행한다.
+                # Worker 경로는 이 변환 없이 DB에 직접 INSERT한다.
                 news_dto = news.to_create_dto()
                 result = await news_service.create_news(news_dto)
                 
