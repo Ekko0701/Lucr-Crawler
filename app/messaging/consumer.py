@@ -11,13 +11,15 @@
   3. 이 Consumer가 Queue에서 메시지를 꺼내 처리:
      a. CrawlJob 상태를 RUNNING으로 업데이트
      b. 6개 언론사 크롤러를 순차 실행
-     c. 수집된 뉴스를 PostgreSQL에 직접 저장 (HTTP 호출 없이)
-     d. CrawlJob 상태를 COMPLETED / FAILED로 업데이트
-     e. 완료 이벤트를 RabbitMQ에 역발행 (Publisher 사용)
+     c. 수집된 뉴스에 분석 결과(감정/키워드/종목)를 채움
+     d. 분석 결과 포함해서 PostgreSQL에 직접 저장 (HTTP 호출 없이)
+     e. CrawlJob 상태를 COMPLETED / FAILED로 업데이트
+     f. 완료 이벤트를 RabbitMQ에 역발행 (Publisher 사용)
   4. Spring CrawlResultListener(미구현)가 완료 이벤트 수신
 
 모델/저장 경로 주의:
-  - 이 Worker 경로는 `CrawledNews`를 `DBManager.save_news()`로 직접 저장합니다.
+  - 이 Worker 경로는 `CrawledNews`를 분석 후
+    `DBManager.save_news_with_analysis()`로 직접 저장합니다.
   - `NewsCreate` DTO와 `NewsService`(HTTP POST)는 여기서 사용하지 않습니다.
   - `NewsCreate`는 FastAPI(`/crawl/*`) 경로에서만 사용됩니다.
 
@@ -50,6 +52,9 @@ from app.services.db_manager import DBManager               # PostgreSQL 직접 
 from app.messaging.publisher import CrawlResultPublisher    # 완료 이벤트 발행
 from app.utils.logger import log
 
+# ── 분석기 import ──
+from app.analyzer import SentimentAnalyzer, KeywordExtractor, StockMatcher
+
 load_dotenv()
 
 
@@ -80,6 +85,7 @@ class CrawlConsumer:
         의존성:
           - DBManager: 크롤링된 뉴스를 PostgreSQL에 직접 저장 + CrawlJob 상태 업데이트
           - CrawlResultPublisher: 크롤링 완료/실패 이벤트를 RabbitMQ에 역발행
+          - SentimentAnalyzer/KeywordExtractor/StockMatcher: 뉴스 분석기
         """
         # PlainCredentials: 평문 사용자/비밀번호 인증
         credentials = pika.PlainCredentials(
@@ -101,6 +107,37 @@ class CrawlConsumer:
         )
         self.db = DBManager()                    # PostgreSQL 직접 조작
         self.publisher = CrawlResultPublisher()  # 완료 이벤트 Publisher
+        self._init_analyzers()
+
+    def _init_analyzers(self):
+        """
+        분석기 3개를 초기화합니다.
+
+        특정 분석기 초기화가 실패해도 전체 크롤링은 계속 진행됩니다.
+        실패한 분석기만 건너뛰고 나머지 분석/저장은 수행합니다.
+        """
+        try:
+            self.sentiment_analyzer = SentimentAnalyzer()
+        except Exception as e:
+            log.warning(f"SentimentAnalyzer 초기화 실패 (감정 분석 건너뜀): {e}")
+            self.sentiment_analyzer = None
+
+        try:
+            self.keyword_extractor = KeywordExtractor()
+        except Exception as e:
+            log.warning(f"KeywordExtractor 초기화 실패 (키워드 추출 건너뜀): {e}")
+            self.keyword_extractor = None
+
+        try:
+            self.stock_matcher = StockMatcher()
+            if self.stock_matcher.stock_count == 0:
+                log.warning(
+                    "종목 사전이 비어 있습니다. "
+                    "stocks 테이블에 종목을 등록하면 종목 매칭이 활성화됩니다."
+                )
+        except Exception as e:
+            log.warning(f"StockMatcher 초기화 실패 (종목 매칭 건너뜀): {e}")
+            self.stock_matcher = None
 
     def start(self):
         """
@@ -191,7 +228,7 @@ class CrawlConsumer:
             job_id = message.get("jobId")              # Spring CrawlJob의 UUID
             max_articles = message.get("maxArticles", 50)  # 언론사당 최대 수집 건수 (기본 50)
 
-            log.info(f"크롤링 요청 수신: jobId={job_id}, maxArticles={max_articles}")
+            log.info(f"크롤링+분석 요청 수신: jobId={job_id}, maxArticles={max_articles}")
 
             # ── Step 2: CrawlJob 상태 → RUNNING ──
             # DB의 crawl_jobs 테이블에서 해당 Job을 PENDING → RUNNING으로 업데이트
@@ -227,10 +264,10 @@ class CrawlConsumer:
             #   Consumer가 죽으면 다른 Consumer에게 재전달
             channel.basic_ack(delivery_tag=method.delivery_tag)
 
-            log.info(f"크롤링 완료: jobId={job_id}, total={total}")
+            log.info(f"크롤링+분석 완료: jobId={job_id}, total={total}")
 
         except Exception as e:
-            log.error(f"크롤링 처리 실패: {e}")
+            log.error(f"크롤링+분석 처리 실패: {e}")
 
             # ── 실패 처리 ──
             # 주의: ACK 전송 단계에서 연결 끊김(heartbeat timeout 등)으로 실패한 경우,
@@ -253,7 +290,8 @@ class CrawlConsumer:
                 if current_status == "COMPLETED":
                     # 이미 COMPLETED로 기록됨 → FAILED로 덮어쓰지 않음
                     log.warning(
-                        f"ACK 전송 실패했으나 크롤링은 성공 (DB 상태: COMPLETED): jobId={job_id}"
+                        f"ACK 전송 실패했으나 크롤링+분석은 성공 "
+                        f"(DB 상태: COMPLETED): jobId={job_id}"
                     )
                 else:
                     # 실제 크롤링 실패 → FAILED 기록
@@ -273,14 +311,15 @@ class CrawlConsumer:
 
     async def _run_all_crawlers(self, max_articles: int) -> dict:
         """
-        등록된 모든 크롤러를 순차 실행하고 언론사별 저장 건수를 반환합니다.
+        등록된 모든 크롤러를 순차 실행하고 분석 후 저장합니다.
 
         실행 순서:
           1. 크롤러 인스턴스 리스트 생성
           2. 각 크롤러의 crawl() 메서드 호출 (비동기, 최대 max_articles건 수집)
-          3. 수집된 뉴스를 DBManager.save_news()로 1건씩 PostgreSQL에 저장
-          4. URL 중복 뉴스는 자동 스킵 (save_news에서 처리)
-          5. 특정 크롤러 실패 시 해당 크롤러만 0건으로 기록, 나머지는 계속 진행
+          3. 수집된 뉴스 리스트에 분석 파이프라인 적용
+          4. DBManager.save_news_with_analysis()로 1건씩 PostgreSQL에 저장
+          5. URL 중복 뉴스는 자동 스킵 (save_news_with_analysis에서 처리)
+          6. 특정 크롤러 실패 시 해당 크롤러만 0건으로 기록, 나머지는 계속 진행
 
         Args:
             max_articles: 언론사당 최대 수집할 기사 수
@@ -313,21 +352,61 @@ class CrawlConsumer:
                 # crawler.crawl(): 비동기 메서드로, CrawledNews 객체 리스트 반환
                 # max_news: 이 언론사에서 최대 수집할 기사 수
                 news_list = await crawler.crawl(max_news=max_articles)
+                analyzed_list = self._analyze_news_batch(news_list)
 
                 # 수집된 뉴스를 1건씩 DB에 저장
-                # save_news()는 URL 중복 시 False를 반환하므로 성공 건수만 카운트
+                # save_news_with_analysis()는 URL 중복 시 False를 반환
                 success_count = 0
-                for news in news_list:
-                    if self.db.save_news(news):
+                for news in analyzed_list:
+                    if self.db.save_news_with_analysis(news):
                         success_count += 1
 
                 media_results[name] = success_count
-                log.info(f"{name} 완료: {success_count}/{len(news_list)}건 저장")
+                log.info(f"{name} 완료: {success_count}/{len(news_list)}건 저장 (분석 포함)")
 
             except Exception as e:
                 # 특정 크롤러 실패 시 해당 크롤러만 0건 기록
                 # 나머지 크롤러는 정상 진행 (전체 중단하지 않음)
-                log.error(f"{name} 크롤링 실패: {e}")
+                log.error(f"{name} 크롤링+분석 실패: {e}")
                 media_results[name] = 0
 
         return media_results
+
+    def _analyze_news_batch(self, news_list: list) -> list:
+        """
+        뉴스 리스트에 감정/키워드/종목 분석 결과를 채웁니다.
+
+        적용 순서:
+          1. 감정 분석(건별)
+          2. 키워드 추출(배치)
+          3. 종목 매칭(건별)
+        """
+        if not news_list:
+            return news_list
+
+        if self.sentiment_analyzer:
+            try:
+                for news in news_list:
+                    combined_text = f"{news.title} {news.content}"
+                    news.sentiment_score = self.sentiment_analyzer.analyze(combined_text)
+            except Exception as e:
+                log.warning(f"감정 분석 실패 (건너뜀): {e}")
+
+        if self.keyword_extractor:
+            try:
+                texts = [f"{n.title} {n.content}" for n in news_list]
+                keywords_batch = self.keyword_extractor.extract_batch(texts, top_n=10)
+                for news, keywords in zip(news_list, keywords_batch):
+                    news.keywords = keywords
+            except Exception as e:
+                log.warning(f"키워드 추출 실패 (건너뜀): {e}")
+
+        if self.stock_matcher:
+            try:
+                for news in news_list:
+                    combined_text = f"{news.title} {news.content}"
+                    news.stock_codes = self.stock_matcher.match(combined_text)
+            except Exception as e:
+                log.warning(f"종목 매칭 실패 (건너뜀): {e}")
+
+        return news_list
