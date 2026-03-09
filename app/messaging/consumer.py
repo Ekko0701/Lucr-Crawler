@@ -340,7 +340,7 @@ class CrawlConsumer:
             ("edaily", EdailyCrawler()),          # 이데일리
             ("herald", HeraldCrawler()),          # 헤럴드경제
             ("chosunbiz", ChosunbizCrawler()),    # 조선비즈
-            ("yahoo", YahooCrawler()),            # Yahoo Finance
+            # ("yahoo", YahooCrawler()),          # Yahoo Finance (비활성화)
         ]
 
         media_results = {}  # 언론사별 저장 건수를 누적할 dict

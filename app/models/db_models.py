@@ -112,6 +112,21 @@ class NewsKeyword(Base):
     created_at = Column(DateTime, default=datetime.now)
 
 
+class Stock(Base):
+    """
+    stocks 테이블 매핑 (Spring의 Stock Entity와 동일)
+
+    NewsStock FK 참조 해소를 위해 필요합니다.
+    """
+    __tablename__ = "stocks"
+
+    code = Column(String(20), primary_key=True)
+    name = Column(String(200), nullable=False)
+    market = Column(String(20), nullable=False)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
 class NewsStock(Base):
     """
     news_stocks 테이블 매핑

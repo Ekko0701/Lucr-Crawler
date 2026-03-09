@@ -53,15 +53,20 @@ class YahooCrawler:
         driver = None
         
         try:
-            # 동기 함수를 비동기로 실행
-            driver = await asyncio.to_thread(self._create_driver)
+            # 중요:
+            # macOS 환경에서 thread worker 안에서 subprocess(fork)가 발생하면
+            # Selenium/ChromeDriver 시작 시 간헐적인 SIGSEGV가 발생할 수 있다.
+            # (crashed on child side of fork pre-exec)
+            #
+            # 따라서 driver 생성은 메인 실행 흐름에서 동기 호출로 처리한다.
+            driver = self._create_driver()
             
             # 뉴스 리스트 페이지 로드
-            await asyncio.to_thread(driver.get, self.news_list_url)
+            driver.get(self.news_list_url)
             await asyncio.sleep(2)  # JavaScript 렌더링 대기
             
             # 뉴스 링크 추출
-            news_links = await asyncio.to_thread(self._extract_news_links, driver)
+            news_links = self._extract_news_links(driver)
             log.info(f"Yahoo Finance 뉴스 링크 {len(news_links)}개 발견")
             
             # 각 뉴스 기사 크롤링
@@ -82,7 +87,8 @@ class YahooCrawler:
             return []
         finally:
             if driver:
-                await asyncio.to_thread(driver.quit)
+                # driver 종료도 동일 이유로 동기 호출
+                driver.quit()
     
     def _extract_news_links(self, driver) -> List[dict]:
         """뉴스 링크 추출"""
@@ -123,7 +129,7 @@ class YahooCrawler:
     async def _fetch_news_content(self, driver, url: str, title: str) -> CrawledNews:
         """뉴스 본문 추출"""
         try:
-            await asyncio.to_thread(driver.get, url)
+            driver.get(url)
             await asyncio.sleep(1.5)
             
             # 본문 추출
