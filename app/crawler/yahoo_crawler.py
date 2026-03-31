@@ -11,10 +11,10 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 from datetime import datetime
 from typing import List
 import asyncio
+import os
 import re
 
 from app.models.news import CrawledNews
@@ -38,8 +38,8 @@ class YahooCrawler:
         chrome_options.add_argument('--window-size=1920,1080')
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36')
         
-        # 자동으로 ChromeDriver 다운로드 및 설치
-        service = Service(ChromeDriverManager().install())
+        # 시스템에 설치된 chromedriver 사용 (Docker: /usr/bin/chromedriver)
+        service = Service(os.getenv("CHROMEDRIVER_PATH", "/usr/bin/chromedriver"))
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.set_page_load_timeout(30)
         
