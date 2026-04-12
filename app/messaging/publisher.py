@@ -74,7 +74,7 @@ class CrawlResultPublisher:
         )
 
     def publish(self, job_id: str, status: str,
-                total_articles: int = 0, media_results: dict = None):
+                total_articles: int = 0, media_results: dict = None) -> bool:
         """
         크롤링 완료/실패 이벤트를 RabbitMQ에 발행
 
@@ -84,6 +84,9 @@ class CrawlResultPublisher:
             total_articles: 전체 언론사에서 수집된 총 기사 수
             media_results:  언론사별 수집 결과 dict
                             예: {"hankyung": 45, "mk": 38, ...}
+
+        Returns:
+            True: 발행 성공, False: 발행 실패
 
         발행되는 JSON 메시지 예시:
         {
@@ -130,9 +133,11 @@ class CrawlResultPublisher:
             connection.close()
 
             log.info(f"완료 이벤트 발행: jobId={job_id}, status={status}, total={total_articles}")
+            return True
 
         except Exception as e:
             # 연결 실패, 발행 실패 등
             # 완료 이벤트 발행 실패는 크롤링 자체에 영향을 주지 않음
-            # (DB에는 이미 저장 완료된 상태)
+            # (DB에는 이미 저장 완료된 상태이지만, 호출자가 실패를 인지할 수 있도록 False 반환)
             log.error(f"완료 이벤트 발행 실패: {e}")
+            return False
